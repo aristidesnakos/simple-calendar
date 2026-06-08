@@ -10,6 +10,9 @@ import {
 import { parseICS, buildICS } from "./lib/ics.js";
 import { parse, parsedToEvent } from "./lib/nlp.js";
 import { fetchFeed, feedEventsToEvents, expandParsed, normalizeFeedUrl } from "./lib/sync.js";
+import {
+  configureGoogle, getToken, listCalendars, fetchGoogleFeed, signOutGoogle,
+} from "./lib/google.js";
 import { storage } from "./lib/storage.js";
 import {
   HOUR_PX, PALETTE, STORE_KEY, VIEW_KEY, REFRESH_MS, RECUR_BACK_DAYS, RECUR_FWD_DAYS,
@@ -41,13 +44,16 @@ function initialData() {
     { id: crypto.randomUUID(), calendarId: "family", title: "Olive grove maintenance", start: at(6, 9, 0), end: at(6, 9, 0), allDay: true, location: "" },
     { id: crypto.randomUUID(), calendarId: "work", title: "Architecture review", start: at(3, 14, 0), end: at(3, 15, 0), allDay: false, location: "" },
   ];
-  return { calendars: cals, events, feeds: [], proxy: "" };
+  return { calendars: cals, events, feeds: [], proxy: "", google: null };
 }
 
 // Ensure older saved payloads gain newly-added fields.
 function normalize(d) {
-  return { feeds: [], proxy: "", calendars: [], events: [], ...d };
+  return { feeds: [], proxy: "", calendars: [], events: [], google: null, ...d };
 }
+
+// OAuth client id: build-time env var first, else a value the user pasted in.
+const ENV_GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "";
 
 // Window over which recurring (RRULE) events are expanded into instances.
 function recurWindow() {
@@ -74,6 +80,8 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [toast, setToast] = useState("");
   const [syncing, setSyncing] = useState({ all: false, ids: {} });
+  // Google connect flow: { busy, error, picker:{calendars,existing}|null }
+  const [google, setGoogle] = useState({ busy: false, error: "", picker: null });
 
   const scrollRef = useRef(null);
   const skipSave = useRef(true);
@@ -182,11 +190,14 @@ export default function App() {
   const syncFeedObject = useCallback(async (feed) => {
     setSyncing((s) => ({ ...s, ids: { ...s.ids, [feed.id]: true } }));
     try {
-      const result = await fetchFeed(feed.url, {
-        proxy: dataRef.current?.proxy,
-        etag: feed.etag,
-        lastModified: feed.lastModified,
-      });
+      const result =
+        feed.kind === "google"
+          ? await fetchGoogleFeed(feed, recurWindow())
+          : await fetchFeed(feed.url, {
+              proxy: dataRef.current?.proxy,
+              etag: feed.etag,
+              lastModified: feed.lastModified,
+            });
       applyFeedResult(feed, result, null);
     } catch (e) {
       applyFeedResult(feed, null, e.message || "sync failed");
@@ -235,6 +246,91 @@ export default function App() {
       feeds: d.feeds.filter((f) => f.id !== id),
     }));
     flash("Unsubscribed");
+  }, [flash]);
+
+  /* ---------- Google Calendar (OAuth, read-only) ---------- */
+  // Point the token manager at our client id whenever it changes, so a reload
+  // can silently re-acquire a token and resync any Google-backed feeds.
+  useEffect(() => {
+    const id = ENV_GOOGLE_CLIENT_ID || data?.google?.clientId || "";
+    if (id) configureGoogle(id);
+  }, [data?.google?.clientId]);
+
+  // Open the calendar picker: ensure a client id, get consent, list calendars.
+  const connectGoogle = useCallback(async (clientIdInput) => {
+    const clientId =
+      ENV_GOOGLE_CLIENT_ID || (clientIdInput || "").trim() || dataRef.current?.google?.clientId;
+    if (!clientId) {
+      // Reachable only if the button is shown without configuration; the deployer
+      // sets VITE_GOOGLE_CLIENT_ID once (see README) — end users never do this.
+      setGoogle((g) => ({ ...g, error: "Google sync isn’t set up on this site yet." }));
+      return;
+    }
+    setGoogle({ busy: true, error: "", picker: null });
+    try {
+      configureGoogle(clientId);
+      const token = await getToken({ interactive: true });
+      const calendars = await listCalendars(token);
+      // Remember the client id so a reload can reconnect without re-entering it.
+      setData((d) => ({ ...d, google: { ...(d.google || {}), clientId } }));
+      const existing = new Set(
+        (dataRef.current?.feeds || [])
+          .filter((f) => f.kind === "google")
+          .map((f) => f.googleCalendarId)
+      );
+      setGoogle({ busy: false, error: "", picker: { calendars, existing } });
+    } catch (e) {
+      setGoogle({ busy: false, error: e.message || "Couldn't connect to Google", picker: null });
+    }
+  }, []);
+
+  // Subscribe to the chosen Google calendars (skipping any already added).
+  const addGoogleCalendars = useCallback((chosen) => {
+    const have = new Set(
+      (dataRef.current?.feeds || []).filter((f) => f.kind === "google").map((f) => f.googleCalendarId)
+    );
+    const fresh = chosen.filter((c) => !have.has(c.id));
+    if (!fresh.length) {
+      setGoogle((g) => ({ ...g, picker: null }));
+      return;
+    }
+    const base = dataRef.current?.calendars.length || 0;
+    const newFeeds = fresh.map((c, i) => {
+      const id = crypto.randomUUID();
+      const color = c.color || PALETTE[(base + i) % PALETTE.length];
+      return {
+        cal: { id, name: c.name, color, visible: true, isFeed: true, source: "google" },
+        feed: {
+          id, kind: "google", googleCalendarId: c.id, calendarId: id,
+          name: c.name, lastSync: null, lastError: null,
+        },
+      };
+    });
+    setData((d) => ({
+      ...d,
+      google: { ...(d.google || {}), connected: true },
+      calendars: [...d.calendars, ...newFeeds.map((n) => n.cal)],
+      feeds: [...d.feeds, ...newFeeds.map((n) => n.feed)],
+    }));
+    setGoogle((g) => ({ ...g, picker: null }));
+    newFeeds.forEach((n) => syncFeedObject(n.feed));
+    flash(`Connected ${fresh.length} Google calendar${fresh.length > 1 ? "s" : ""}`);
+  }, [syncFeedObject, flash]);
+
+  const disconnectGoogle = useCallback(() => {
+    signOutGoogle();
+    setData((d) => {
+      const googleIds = new Set((d.feeds || []).filter((f) => f.kind === "google").map((f) => f.id));
+      return {
+        ...d,
+        google: null,
+        calendars: d.calendars.filter((c) => !googleIds.has(c.id)),
+        feeds: d.feeds.filter((f) => f.kind !== "google"),
+        events: d.events.filter((e) => !googleIds.has(e.feedId)),
+      };
+    });
+    setGoogle({ busy: false, error: "", picker: null });
+    flash("Disconnected Google");
   }, [flash]);
 
   /* sync feeds once on load, then on an interval */
@@ -425,6 +521,10 @@ export default function App() {
           preview={preview} setPreview={setPreview} acceptPreview={acceptPreview} editFromPreview={editFromPreview}
           toggleCal={toggleCal} addCal={addCal}
           addFeed={addFeed} removeFeed={removeFeed} refreshFeed={refreshFeed} refreshAll={refreshAll} syncing={syncing}
+          google={google} googleConnected={!!data.google?.connected}
+          hasGoogleClientId={!!(ENV_GOOGLE_CLIENT_ID || data.google?.clientId)}
+          connectGoogle={connectGoogle} addGoogleCalendars={addGoogleCalendars} disconnectGoogle={disconnectGoogle}
+          clearGoogleError={() => setGoogle((g) => ({ ...g, error: "", picker: null }))}
           onImport={onImport} onExport={onExport} fileRef={fileRef}
         />
 

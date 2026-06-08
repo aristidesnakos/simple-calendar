@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   Calendar, Plus, ChevronRight, Sparkles, Check, Upload, Download,
-  Eye, EyeOff, RefreshCw, Trash2, Rss,
+  Eye, EyeOff, RefreshCw, Trash2, Rss, Link2, Loader2, X,
 } from "lucide-react";
 import { DAY_NAMES, MONTHS, parseLocal, fmtTime } from "../lib/dates.js";
 import MiniMonth from "./MiniMonth.jsx";
@@ -22,6 +22,8 @@ export default function Sidebar({
   nlText, setNlText, nlError, runNL, preview, setPreview, acceptPreview, editFromPreview,
   toggleCal, addCal,
   addFeed, removeFeed, refreshFeed, refreshAll, syncing,
+  google, googleConnected, hasGoogleClientId,
+  connectGoogle, addGoogleCalendars, disconnectGoogle, clearGoogleError,
   onImport, onExport, fileRef,
 }) {
   const [showAddFeed, setShowAddFeed] = useState(false);
@@ -40,6 +42,15 @@ export default function Sidebar({
   };
 
   return (
+    <>
+    {google?.picker && (
+      <GooglePicker
+        calendars={google.picker.calendars}
+        existing={google.picker.existing}
+        onAdd={addGoogleCalendars}
+        onClose={clearGoogleError}
+      />
+    )}
     <aside className="sidebar">
       <div className="brand">
         <span className="brand-mark"><Calendar size={17} /></span>
@@ -119,11 +130,31 @@ export default function Sidebar({
                 <RefreshCw size={13} className={syncing.all ? "spin" : ""} />
               </button>
             )}
-            <button className="icon-btn tiny" onClick={() => setShowAddFeed((v) => !v)} title="Subscribe to a calendar">
+            <button className="icon-btn tiny" onClick={() => setShowAddFeed((v) => !v)} title="Subscribe by .ics link">
               <Plus size={14} />
             </button>
           </span>
         </div>
+
+        {/* one-click Google connect — only shown once a client id is configured,
+            so an end user never sees any credential setup. */}
+        {(hasGoogleClientId || googleConnected) && (
+          <>
+            <button
+              className="btn google-connect"
+              onClick={() => connectGoogle()}
+              disabled={google?.busy}
+              title="Authorize read-only access to your Google calendars"
+            >
+              {google?.busy ? <Loader2 size={14} className="spin" /> : <Link2 size={14} />}
+              {googleConnected ? "Add Google calendar" : "Connect Google Calendar"}
+            </button>
+            {googleConnected && (
+              <button className="feed-disconnect" onClick={disconnectGoogle}>Disconnect Google</button>
+            )}
+            {google?.error && <div className="feed-hint err-hint">{google.error}</div>}
+          </>
+        )}
 
         {feeds.map((f) => {
           const cal = calMap[f.calendarId];
@@ -154,8 +185,8 @@ export default function Sidebar({
 
         {feeds.length === 0 && !showAddFeed && (
           <div className="feed-hint" style={{ padding: "2px 8px 4px" }}>
-            <Rss size={11} style={{ verticalAlign: "-1px" }} /> Subscribe to Google, Apple or Outlook
-            calendars by their secret <code>.ics</code> link.
+            <Rss size={11} style={{ verticalAlign: "-1px" }} /> Or subscribe to any Apple/Outlook
+            calendar by its secret <code>.ics</code> link.
           </div>
         )}
 
@@ -198,6 +229,60 @@ export default function Sidebar({
         <input ref={fileRef} type="file" accept=".ics,text/calendar" hidden onChange={onImport} />
       </div>
     </aside>
+    </>
+  );
+}
+
+/* Modal checklist of the user's Google calendars after they authorize. */
+function GooglePicker({ calendars, existing, onAdd, onClose }) {
+  const isAdded = (id) => existing?.has?.(id);
+  const [picked, setPicked] = useState(() => {
+    const init = {};
+    // Pre-check everything not already subscribed; primary first by default.
+    for (const c of calendars) if (!isAdded(c.id)) init[c.id] = true;
+    return init;
+  });
+  const toggle = (id) => setPicked((p) => ({ ...p, [id]: !p[id] }));
+  const chosen = calendars.filter((c) => picked[c.id] && !isAdded(c.id));
+
+  return (
+    <div className="modal-bg" onMouseDown={onClose}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span>Choose Google calendars</span>
+          <button className="icon-btn" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="gpick-list">
+          {calendars.map((c) => {
+            const added = isAdded(c.id);
+            return (
+              <label key={c.id} className={`gpick-row ${added ? "added" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={added || !!picked[c.id]}
+                  disabled={added}
+                  onChange={() => toggle(c.id)}
+                />
+                <span className="gpick-swatch" style={{ background: c.color || "#888" }} />
+                <span className="gpick-name">
+                  {c.name}{c.primary ? " · primary" : ""}
+                </span>
+                {added && <span className="gpick-added">added</span>}
+              </label>
+            );
+          })}
+        </div>
+        <div className="modal-foot">
+          <span />
+          <div className="foot-right">
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            <button className="btn primary" disabled={!chosen.length} onClick={() => onAdd(chosen)}>
+              <Check size={14} /> Add {chosen.length || ""}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

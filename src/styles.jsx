@@ -103,6 +103,27 @@ button { cursor:pointer; font-family:inherit; }
 .feed-add input:focus { border-color:var(--accent); }
 .feed-hint { font-size:10.5px; color:var(--faint); line-height:1.45; }
 .feed-hint a { color:var(--dim); }
+.feed-hint.err-hint { color:#e0823f; padding:2px 8px 4px; }
+
+/* ---------- Google connect ---------- */
+.btn.google-connect { width:100%; justify-content:center; margin:4px 0 2px;
+  background:var(--panel2); color:var(--text); border:1px solid var(--line); }
+.btn.google-connect:hover { background:var(--raise); border-color:var(--accent); }
+.btn.google-connect:disabled { opacity:.6; cursor:default; }
+.feed-disconnect { display:block; width:100%; text-align:center; background:transparent; border:none;
+  color:var(--faint); font-size:10.5px; padding:2px 0 4px; cursor:pointer; }
+.feed-disconnect:hover { color:#e0533b; }
+
+.gpick-list { display:flex; flex-direction:column; gap:2px; max-height:300px; overflow-y:auto;
+  margin:4px 0 8px; }
+.gpick-row { display:flex; align-items:center; gap:9px; padding:8px 8px; border-radius:8px;
+  cursor:pointer; transition:background .12s; }
+.gpick-row:hover { background:var(--panel2); }
+.gpick-row.added { opacity:.55; cursor:default; }
+.gpick-row input { accent-color:var(--accent); width:15px; height:15px; flex-shrink:0; }
+.gpick-swatch { width:12px; height:12px; border-radius:4px; flex-shrink:0; }
+.gpick-name { font-size:13px; color:var(--text); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gpick-added { font-size:10px; color:var(--faint); text-transform:uppercase; letter-spacing:.04em; }
 
 .sidebar-foot { margin-top:auto; display:flex; flex-direction:column; gap:6px; padding-top:8px; }
 

@@ -10,6 +10,7 @@ SmartCal is a React + Vite app with a dark, keyboard-friendly UI and day / week 
 
 - **Offline natural-language quick-add.** Type `Lunch with George at 1pm` and SmartCal parses it into an event preview you confirm (or tweak) before it is added. No API key, no network call — the parser runs entirely on-device.
 - **Day / week / month views**, with your last-used view remembered between visits.
+- **Connect Google Calendar (OAuth, read-only).** One click → Google's consent screen → pick which calendars to add. No backend, no proxy, and named-timezone events resolve correctly. See [Connect Google Calendar](#connect-google-calendar-oauth-read-only).
 - **Calendar feed subscriptions.** Subscribe to remote `.ics` feeds — a Google "secret address in iCal format", an Apple/iCloud `webcal://` link, or an Outlook published `.ics` URL. Feeds **auto-refresh hourly** and can be refreshed manually (per feed or all at once).
 - **`.ics` import / export.** Import an iCalendar file into an "Imported" calendar; export the events you own to `smartcal.ics`.
 - **Recurring-event (RRULE) expansion.** Repeating events from feeds and imported files are expanded into individual instances for display.
@@ -67,6 +68,32 @@ Open the **Subscriptions** section in the sidebar, click **+**, paste the feed U
 - **Outlook:** Publish the calendar, then copy the published **ICS URL**.
 
 Refreshes use conditional GETs (ETag / If-Modified-Since) so most polls are cheap, and a transient network/CORS error or an unchanged (`304`) response never blanks your already-synced events.
+
+---
+
+## Connect Google Calendar (OAuth, read-only)
+
+**What your users see:** a single **Connect Google Calendar** button in the **Subscriptions** section → Google's own consent screen → a checklist of their calendars to add. No URLs, no secret links, no setup. Each calendar they pick becomes a read-only subscription, with no CORS proxy and **correct named-timezone handling** (Google returns absolute instants, so `TZID` events resolve exactly).
+
+**This is a one-time step for whoever deploys SmartCal — not for end users.** Like every app that talks to Google (Fantastical, Notion, etc.), SmartCal needs a single **OAuth client id** that the publisher registers once and ships to everyone. Your users never create or see it. The button only appears once this id is configured; until then it's hidden, so no one is ever shown credential setup.
+
+### Setting it up once (the deployer)
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/) create (or pick) a project.
+2. **APIs & Services → Library →** enable the **Google Calendar API**.
+3. **APIs & Services → OAuth consent screen →** configure it. While it's in **Testing** mode, add the Google accounts that may use it under **Test users** — that works immediately with no app verification. (`calendar.readonly` is a *sensitive* scope, so opening it to the public later requires Google's verification.)
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID → Web application.** Under **Authorized JavaScript origins** add the origin SmartCal runs on (e.g. `http://localhost:5173` for `npm run dev`, plus your deployed origin). Copy the **Client ID** (`…apps.googleusercontent.com`).
+5. Put it in a `.env` file (see `.env.example`):
+
+   ```
+   VITE_GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
+   ```
+
+   then restart `npm run dev` (or rebuild). The **Connect Google Calendar** button now appears for everyone using that build.
+
+**Security notes.** The OAuth client id is **not** a secret — it's designed to ship in a frontend build. The per-user access token lives in memory only (never written to storage) and is silently refreshed while the Google session is alive (a brief popup may flash after a reload). SmartCal requests only `calendar.readonly`, so it can never modify anyone's Google calendars. **Disconnect Google** revokes the token and removes the synced calendars.
+
+> Apple iCloud and Outlook have no comparable browser-only read API, so for those the secret `.ics` link above remains the right path.
 
 ---
 
@@ -136,16 +163,17 @@ A small, dependency-light module map (only runtime deps are React and `lucide-re
 These are honest, current constraints:
 
 - **Recurrence (RRULE).** Supports `FREQ` of `DAILY` / `WEEKLY` / `MONTHLY` / `YEARLY`, plus `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY` (weekly, and monthly/yearly ordinals like "3rd Friday" via `3FR` / `-1MO`), and `BYMONTHDAY`. It does **not** support `BYMONTH`, `BYSETPOS`, `BYWEEKNO`, `BYYEARDAY`, `WKST`, or `BYDAY` on `DAILY`. Instances are expanded over a window of roughly **−1 month to +12 months** around today (configurable in `constants.js`).
-- **Timezones.** UTC times (`Z`) and floating local times are handled correctly. Named-`TZID` times are read as their **wall-clock value** — there is no offset conversion or `VTIMEZONE` parsing yet. (Most personal feeds use UTC or floating times, which this handles correctly.)
+- **Timezones.** Via the **Connect Google Calendar** path, timezones (including named `TZID`) resolve correctly, since Google returns absolute instants. For raw `.ics` feeds, UTC times (`Z`) and floating local times are handled correctly, but named-`TZID` times are read as their **wall-clock value** — there is no offset conversion or `VTIMEZONE` parsing on the `.ics` path yet. (Most personal feeds use UTC or floating times, which this handles correctly.)
 - **Multi-day all-day events.** The correct end date is computed (honoring the exclusive `DTEND` rule), but such events currently render **only on their start day** — there is no horizontal spanning across the grid yet.
-- **Sync is read-only.** There is no write-back or two-way sync with providers.
+- **Sync is read-only.** Both Google OAuth and `.ics` subscriptions are read-only — there is no write-back or two-way sync with providers.
 
 ---
 
 ## Roadmap
 
-- Two-way OAuth sync with providers.
-- Full `TZID` / `VTIMEZONE` support.
+- Two-way OAuth **write** sync (the read-only Google connect is shipped; writing back needs a token-refresh backend).
+- Microsoft Graph "Connect Outlook" using the same read-only source model.
+- Full `TZID` / `VTIMEZONE` support on the raw `.ics` path.
 - RRULE `BYSETPOS` and `BYMONTH`.
 - Multi-day spanning render across the day/week/month grid.
 - Optional on-device LLM fallback for messy quick-add phrases.
@@ -154,6 +182,6 @@ These are honest, current constraints:
 
 ## Tests
 
-`npm test` runs the [vitest](https://vitest.dev/) suite, covering the natural-language parser (`src/lib/nlp.test.js`), ICS parsing/export (`src/lib/ics.test.js`), and recurrence expansion (`src/lib/recur.test.js`).
+`npm test` runs the [vitest](https://vitest.dev/) suite, covering the natural-language parser (`src/lib/nlp.test.js`), ICS parsing/export (`src/lib/ics.test.js`), recurrence expansion (`src/lib/recur.test.js`), and the Google event mapping (`src/lib/google.test.js`).
 
 A manual QA checklist lives in `TESTING.md`.
